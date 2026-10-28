@@ -1,55 +1,46 @@
-# P104-100 Feature Boundary Report + All-in-One Toolkit v3.0
+# P104-100 Unlock & Feature Boundaries (v3.0)
 
 **English** | [中文](README.zh-CN.md)
 
-> Measured feature boundaries of the NVIDIA **P104-100** (GP104 mining card, `10DE:1B87`):
-> what can actually be unlocked from the host, where each limit lives, and the evidence.
-> Also ships the **v3.0 all-in-one toolkit** (Gen2 x4 + width-declaration experiment).
+> Measured facts for the NVIDIA **P104-100** (GP104 mining card, `10DE:1B87`):
+> what can be unlocked, where each limit lives, and the evidence.
 
----
+## 30-second summary
 
-## Summary
+| Capability | Result |
+|---|---|
+| **PCIe Gen2 x4** | ✅ unlockable (0.78 → 1.55 GB/s measured) |
+| **Declared width x4→x16** | ✅ host-writable (`LnkCap` max width becomes 16); ⚠️ actual link/bandwidth UNVERIFIED (needs capacitors) |
+| **PCIe Gen3** | ❌ fuse-locked (`GEN3_DIS=1`) |
+| **NVENC / NVDEC / OFA** | ❌ fuse-locked (`NVDEC_DISABLE=1` / `NVENC_DISABLE=3` / `OFA_DISABLE=1`) |
 
-| Capability | Result | Layer |
-|---|---|---|
-| **PCIe Gen2 x4** | ✅ **Unlockable** (0.78 → 1.55 GB/s measured) | register layer |
-| **Declared link width x4→x16** | ✅ host-writable (`LnkCap` max width becomes 16 live); ⚠️ **actual link width UNVERIFIED**, no bandwidth gain | register + physical (unverified) |
-| **PCIe Gen3** | ❌ **Not unlockable** (OTP fuse `GEN3_DIS=1`, 6 independent evidence lines) | fuse layer |
-| **NVENC / NVDEC / OFA** | ❌ **Not unlockable** (OTP fuses `NVDEC_DISABLE=1` / `NVENC_DISABLE=3` / `OFA_DISABLE=1`) | fuse layer |
+Full evidence & coverage boundaries → [`docs/05-功能边界总表.md`](docs/05-功能边界总表.md) (Chinese)
 
-> In one sentence: **everything solvable at the register layer is solved; the firmware layer has no host entry; the fuse layer (Gen3, media engines) is the real wall.**
+## Download
 
-Full evidence, methodology and coverage boundaries: **[`docs/05-功能边界总表.md`](docs/05-功能边界总表.md)** (Chinese).
+- **Latest v3.0**: see **Releases** → `P104-v3.0-standalone-toolkit.zip`
+  (standalone: bundled Python runtime + drivers, no Python install needed, admin required)
+- **Stable Gen2 only**: use **v1.6** (older repo `skbskhud/p104-gen2-unlock`, or historical releases here)
 
----
-
-## Contents
+## Usage (3 steps)
 
 ```
-docs/05-功能边界总表.md      boundary report (four-layer model / evidence / fuse verdicts)
-P104-一键组合包-v3.0/        all-in-one toolkit (Gen2 x4 + width declaration experiment)
-  一键解锁.cmd               self-elevating installer + apply now
-  一键验证.cmd               status + optional retrain
-  一键恢复.cmd               stop task + restore registers + remove drivers
-  tool/                      toolkit sources (Python)
-  Gen2-2.0/                  legacy multi-card Gen2 tool (alternative; do not run both)
+1. Extract → run 一键解锁.cmd (self-elevates)
+2. 一键验证.cmd → declared Gen2 / declared x16 / actual link
+3. 一键恢复.cmd → stop task + restore registers + remove drivers
 ```
 
-**Note**: the v3.0 package is currently a **workstation build** (depends on this project's
-Python runtime and driver paths). A standalone distributable will be prepared before public release.
-For "stable Gen2 only", use the older repository: `skbskhud/p104-gen2-unlock` → Release **v1.6**.
-
----
+- watchdog re-asserts every 100ms; auto-start at logon;
+- drivers are BYOVD (WinRing0/ThrottleStop) — AV alerts are expected;
+- logs/state: `%ProgramData%\P104Unlock\`.
 
 ## Disclaimer
 
-- **Width x16 is declaration-layer only.** We have NOT verified that the link actually trains
-  to x16 after soldering AC-coupling capacitors. No bandwidth gain is claimed.
-- **Gen3 and the media engines are fuse-locked (OTP).** No host-side (register/driver/VBIOS/EFI)
-  path exists; only physical fuse attacks remain, which are out of scope and not recommended.
-- All writes are **volatile registers**: no VBIOS flashing, no fuse burning; power cycle restores.
-- For research on hardware you own only.
+- **Width x16 is declaration-layer only.** We do NOT claim bandwidth gains; link width after
+  soldering capacitors is unverified.
+- **Gen3 and the media engines are OTP-fuse locked.** No host-side path exists.
+- All writes are volatile registers; power cycle restores everything. For research on hardware you own.
 
----
+## Versions
 
-*This repository is a private preview; content will be published/merged once verified.*
+This README describes the **current version** only; historical versions live in **Releases**.
