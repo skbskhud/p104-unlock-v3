@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
-import sys
-sys.path.insert(0, r"D:\workplace2\dsh-workspace\_scratch")
-sys.path.insert(0, r"D:\workplace2\dsh-workspace\_scratch\directions\width16")
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from width16_hold import FastSession
 s = FastSession()
 if not s.open():

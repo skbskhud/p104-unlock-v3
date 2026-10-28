@@ -21,7 +21,7 @@
 import sys, os, time, json, subprocess, ctypes as C
 from ctypes import wintypes as W
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, r"D:\workplace2\dsh-workspace\_scratch")
+if HERE not in sys.path: sys.path.insert(0, HERE)
 import lib_p104 as L
 import hwlock
 
@@ -148,16 +148,23 @@ class FastSession(L.Session):
                     svc_delete(s)
                     time.sleep(0.15)
 
-STATE = os.path.join(HERE, "width16_state.json")
-LOGF = os.path.join(HERE, "width16_hold.log")
+DATA_DIR = os.path.join(os.environ.get("ProgramData", os.path.expanduser("~")), "P104Unlock")
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except Exception:
+    DATA_DIR = HERE
+STATE = os.path.join(DATA_DIR, "width16_state.json")
+LOGF = os.path.join(DATA_DIR, "width16_hold.log")
 TASK = "P104 PCIe Width x16 Hold"
-PYW = r"D:\workplace2\dsh-workspace\.python312\pythonw.exe"
+PYW = os.path.join(os.path.dirname(HERE), "python", "pythonw.exe")
+if not os.path.exists(PYW):
+    PYW = sys.executable
 SELF = os.path.abspath(__file__)
 
 # pythonw.exe 下 sys.stdout/stderr 为 None —— 重定向到文件，否则 print 会抛异常
 try:
     if sys.stdout is None or not hasattr(sys.stdout, "write"):
-        _f = open(os.path.join(HERE, "width16_stdout.log"), "a", encoding="utf-8", buffering=1)
+        _f = open(os.path.join(DATA_DIR, "width16_stdout.log"), "a", encoding="utf-8", buffering=1)
         sys.stdout = _f
         sys.stderr = _f
 except Exception:
