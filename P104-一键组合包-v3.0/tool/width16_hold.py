@@ -583,6 +583,39 @@ def _queue_or_direct(name, force=False):
     finally:
         s.close()
 
+def cmd_decl16(on=True):
+    """只改「声明最大宽度」——2026-10-28 实测的安全配方（不碰 Gen2/不触发链路重训）：
+       0x8872C 低4位=6；0x8C040 = bit31=1 + SPEED 固定 Gen1(2) + 清 bits27-31
+       → LnkCap maxwidth 由 x4 变 x16（maxspeed 仍是 Gen1），实测可逆、不掉卡。
+       注意：不要在这个状态后再去跑 Gen2 的 retrain（会把 SPEED 改到 1，可能触发 x16 提交导致掉卡）。"""
+    s = open_session()
+    if not s:
+        log("!! 找不到 P104"); return 2
+    try:
+        v = s.rd(0x8872C)
+        if v is None:
+            log("!! 读 0x8872C 失败"); return 2
+        s.wr(0x8872C, (v & ~0xF) | 6, "decl16:override=6"); time.sleep(0.03)
+        if on:
+            cur = s.rd(0x8C040)
+            if cur is None:
+                log("!! 读 0x8C040 失败"); return 2
+            new = (cur & ~0xF8000000 & ~0xC0000) | (2 << 18) | 0x80000000
+            log("   写 0x8C040 = 0x%08X（bit31=1, SPEED=2_5GT 固定）" % new)
+            s.wr(0x8C040, new, "decl16:on"); time.sleep(0.05)
+        else:
+            st = load_state()
+            base = st.get("base040", 0x20085800)
+            log("   写 0x8C040 = 0x%08X（恢复工厂基线）" % base)
+            s.wr(0x8C040, base, "decl16:off"); time.sleep(0.05)
+        lc = cfg(s, s.loc, s.cap, 0x0C); l2 = cfg(s, s.loc, s.cap, 0x2C)
+        ls = cfg(s, s.loc, s.cap, 0x12)
+        log("   LnkCap=0x%08X (maxspeed=%d, maxwidth=x%d)  LnkCap2=0x%08X  LnkSta=0x%08X (speed=%d, width=%d)" % (
+            lc, lc & 0xF, (lc >> 4) & 0x3F, l2, ls, ls & 0xF, (ls >> 4) & 0x3F))
+        return 0
+    finally:
+        s.close()
+
 def cmd_restore():
     st = load_state()
     s = open_session()
@@ -670,6 +703,8 @@ def main(argv):
     if sub == "retrain":  return _queue_or_direct("retrain")
     if sub == "width-on": return _queue_or_direct("width_on", force="--force" in argv)
     if sub == "width-off":return _queue_or_direct("width_off")
+    if sub == "decl16":   return cmd_decl16(True)
+    if sub == "decl16-off": return cmd_decl16(False)
     if sub == "restore":  return cmd_restore()
     if sub == "install":  return cmd_install(delay=opt("--delay", 60))
     if sub == "uninstall": return cmd_uninstall()
