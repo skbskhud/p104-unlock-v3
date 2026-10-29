@@ -337,8 +337,13 @@ def apply_gen2(s, loc, st, with_width=False):
         log("   宽度声明 x16 = %s (maxwidth=%d)" % ("✔" if width_ok else "✘", (lc >> 4) & 0x3F))
     return gen2_ok, width_ok, False
 
-def width_set(s, loc, on):
+def width_set(s, loc, on, force=False):
     cap = s.cap
+    if on and not force:
+        # 2026-10-29 实测：物理层只有 x4 时写 bit31 → 硬件尝试 x16 提交 → LTSSM 卡死掉卡
+        log("!! 拒绝开启宽度 x16：未补电容/物理 lane 未通时此操作会掉卡（2026-10-29 实测）。")
+        log("   确认物理层就绪后，用 width-on --force 强制执行。")
+        return None
     v = s.rd(0x8C040)
     if v is None:
         return None
@@ -392,7 +397,7 @@ def run_cmd_in_session(s, loc, st, name):
         lc, l2, ls, _ = report(s, loc, s.cap)
         log("命令执行: retrain -> LNKSTA speed=%d" % (ls & 0xF))
     elif name == "width_on":
-        w = width_set(s, loc, True)
+        w = width_set(s, loc, True, force=True)
         log("命令执行: 宽度 x16 声明开 -> maxwidth=%s" % (w,))
     elif name == "width_off":
         w = width_set(s, loc, False)
@@ -433,8 +438,8 @@ def cmd_run(seconds=0, delay=60, with_width=False):
                         last_fail_log = time.time()
                     time.sleep(2); continue
                 log("已连上 P104 %02X:%02X.%d" % s.loc)
-                # 首次施加：默认只 Gen2；若之前手动开过宽度（state 里有 want_width）则同时保持
-                g2, w16, lost = apply_gen2(s, s.loc, st, with_width=(with_width or st.get("want_width", False)))
+                # 首次施加：默认只 Gen2；宽度 x16 必须显式 --with-width（未补电容会掉卡）
+                g2, w16, lost = apply_gen2(s, s.loc, st, with_width=with_width)
                 if lost:
                     log("!! 施加过程中设备失去响应（可能掉卡）→ 关闭句柄、等待恢复；请冷启动")
                     try: s.close()
@@ -464,7 +469,7 @@ def cmd_run(seconds=0, delay=60, with_width=False):
                     l2 = cfg(s, s.loc, s.cap, 0x2C)
                     if (l2 & 0x6) != 0x6 and time.time() - last_retrain > 5:
                         log("检测到 Gen2 声明丢失（LNKCAP2=0x%08X），重新施加" % l2)
-                        g2, w16, lost = apply_gen2(s, s.loc, st, with_width=st.get("want_width", False))
+                        g2, w16, lost = apply_gen2(s, s.loc, st, with_width=False)
                         if lost:
                             try: s.close()
                             except Exception: pass
@@ -540,8 +545,12 @@ def cmd_once(with_width=False, do_retrain=True):
     finally:
         s.close()
 
-def _queue_or_direct(name):
+def _queue_or_direct(name, force=False):
     """若保持进程在跑 → 写命令文件；否则自己开 session 执行"""
+    if name == "width_on" and not force:
+        log("!! 未加 --force：拒绝开启宽度 x16（未补电容/物理 lane 未通时会掉卡，2026-10-29 实测）。")
+        log("   确认物理层就绪后再执行: width-on --force")
+        return 1
     h = lock_holder()
     if h and h[0] == "width16-hold" and h[1] and _pid_alive(h[1]):
         if queue_cmd(name):
@@ -564,7 +573,7 @@ def _queue_or_direct(name):
         if name == "retrain":
             retrain(s); time.sleep(1.0); log("retrain 已下发")
         elif name == "width_on":
-            w = width_set(s, s.loc, True); log("宽度 x16 声明开 -> maxwidth=%s" % (w,))
+            w = width_set(s, s.loc, True, force=True); log("宽度 x16 声明开 -> maxwidth=%s" % (w,))
             st["want_width"] = True; save_state(st)
         elif name == "width_off":
             w = width_set(s, s.loc, False); log("宽度声明关 -> maxwidth=%s" % (w,))
@@ -659,7 +668,7 @@ def main(argv):
                                           do_retrain="--no-retrain" not in argv)
     if sub == "oneclick": return cmd_oneclick(delay=opt("--delay", 60))
     if sub == "retrain":  return _queue_or_direct("retrain")
-    if sub == "width-on": return _queue_or_direct("width_on")
+    if sub == "width-on": return _queue_or_direct("width_on", force="--force" in argv)
     if sub == "width-off":return _queue_or_direct("width_off")
     if sub == "restore":  return cmd_restore()
     if sub == "install":  return cmd_install(delay=opt("--delay", 60))
