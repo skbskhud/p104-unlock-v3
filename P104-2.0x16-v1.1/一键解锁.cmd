@@ -54,16 +54,23 @@ if errorlevel 1 (
 )
 echo.
 
-echo [3/3] Waiting for the Gen2 link (up to 90 seconds) ...
+echo [3/3] Waiting for the Gen2 link (up to 120 seconds) ...
 echo.
 set WAIT=0
 
 :waitloop
-"%~dp0bin\P104Gen2x4.exe" -check >"%TEMP%\p104_check.txt" 2>&1
-findstr /C:"UNLOCKED" "%TEMP%\p104_check.txt" >nul 2>&1
-if not errorlevel 1 goto success
+rem The holder rewrites C:\ProgramData\P104Gen2x4\current-state file every second.
+rem Read the raw register evidence directly (ASCII markers) instead of relying only
+rem on "-check", so a transient check hiccup cannot report FAILED while the link is fine.
+findstr /C:"LNKSTA = 0x00001042" "C:\ProgramData\P104Gen2x4\*.txt" >nul 2>&1
+if errorlevel 1 goto waitnotyet
+findstr /C:"MAXWIDTH=16" "C:\ProgramData\P104Gen2x4\*.txt" >nul 2>&1
+if errorlevel 1 goto waitnotyet
+goto success
+
+:waitnotyet
 set /a WAIT+=5
-if %WAIT% GEQ 90 goto failed
+if %WAIT% GEQ 120 goto failed
 timeout /t 5 /nobreak >nul 2>&1
 echo    ... still waiting, %WAIT% seconds
 goto waitloop
@@ -74,6 +81,11 @@ echo.
 echo ============================================================
 echo   SUCCESS - the link is now Gen2 x4.
 echo ============================================================
+echo.
+echo   WHAT NOW: you can CLOSE THIS WINDOW now.
+echo             The background SYSTEM task keeps the link at Gen2 x4,
+echo             and restores it automatically after reboot.
+echo             To stop holding: run the STOP script in this folder.
 echo.
 "%~dp0bin\P104Gen2x4.exe" -check
 echo.

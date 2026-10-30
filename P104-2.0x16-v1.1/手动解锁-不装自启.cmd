@@ -25,11 +25,17 @@ echo   P104-100  manual unlock  (no autostart)
 echo ============================================================
 echo.
 echo  KEEP THIS WINDOW OPEN while you use the card.
-echo  Closing this window (or Ctrl+C) stops the hold process and
-echo  the link falls back to Gen1 x4.
+echo  This window IS the hold process: when you see the link is Gen2,
+echo  you may leave it open in the background and use the card.
+echo  Close it (or Ctrl+C) only when you are done - then the link
+echo  falls back to Gen1 x4 (this is normal, not a failure).
 echo.
 echo  Only one instance may touch the card at a time, so any
 echo  running hold process is stopped first.
+echo.
+echo  If you want to CLOSE the window and keep Gen2, use the
+echo  ONE-CLICK script instead: it installs a background task, so
+echo  the window can be closed.
 echo.
 
 echo [1/2] Stopping a previous hold process (if any) ...

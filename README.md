@@ -45,6 +45,10 @@ Download `P104-2.0x16-v1.1.zip` from the repo root or **Releases**:
 5. Stop: `停止按住.cmd`; uninstall: `卸载.cmd` (keeps the driver policy keys by design).
 6. No autostart? Use `手动解锁-不装自启.cmd` (keep the window open; closing it stops the hold).
 
+> **Can I close the window?**
+> - **One-click script (recommended): yes.** After SUCCESS you can close the window; the hold process lives in a SYSTEM scheduled task and re-unlocks after reboot.
+> - **Manual script: no.** That window *is* the hold process; closing it stops the hold (link falls back to Gen1 x4 — normal).
+> - **Re-running is safe:** if the card is already unlocked, the tool detects "already Gen2 x4 + x16 declared", skips all writes/resets, and only restarts the hold process (brief link fallback, recovers in seconds).
 All `.cmd` files are pure ASCII + CRLF (the v1.1 encoding fix); the package README has the details.
 
 ## How it works (v1.1)
