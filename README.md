@@ -20,31 +20,18 @@
 ## Verification status
 
 - ✅ Verified (4.5h continuous): Gen2 x4 under the resident holder, 1.55 GB/s measured; width declaration written (`LnkCap maxwidth=16`)
-- ⏳ Pending: clean-boot autostart test (v1.6 flow, expected 2-4 min after boot)
 - ⏳ Pending: physical x16 after adding AC coupling caps (expected to work, will update)
 
-## Two builds (pick one, do not run both)
-
-**⭐ Manual is the recommended build**: most controllable, confirm it works before using the auto one.
+## Single build: Manual
 
 | Build | Feature | Asset |
 |---|---|---|
-| **⭐ Manual (recommended)** | **no task / no autostart**; run `手动解锁.cmd` and keep the window open; close it to stop | `P104-2.0x16-Manual-v1.0.zip` |
-| Auto (alternative) | registers a SYSTEM task (boot +60s / logon +15s / retry every minute). **The first card reset after a cold boot often fails to latch**, so it relies on the per-minute retry; usually 2-4 min, sometimes longer | `P104-2.0x16-Auto-v1.0.zip` |
+| **Manual** | no task / no autostart; run `手动解锁.cmd` as administrator, keep the window open; close it to stop | `P104-2.0x16-Manual-v1.0.zip` |
 
-> Auto build caveat: the first latch is flaky, expect a few minutes. **Need it now / want to confirm -> Manual**; want it ready right after boot -> Auto.
-
-Both do the same thing (Gen2 x4 + x16 declaration); only autostart differs.
+The Auto build has been **withdrawn** (its first latch was unreliable). The Manual build runs the exact same unlock engine
+(5 device resets + resident hold process); only the boot task is gone.
 
 ## Quick start
-
-### Auto build
-```
-1) extract -> right-click install.cmd -> Run as administrator
-2) reboot
-3) wait 2-4 minutes after boot (the task retries automatically)
-4) run status.cmd (expect "Gen2 x4 [declared width x16]")
-```
 
 ### Manual build
 ```
