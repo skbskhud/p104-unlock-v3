@@ -1,0 +1,11 @@
+# Python 运行时产物（不要把 .pyc 提交进仓库）
+__pycache__/
+*.py[cod]
+
+# 本工具运行时/输出文件
+probe.json
+plan.json
+result.json
+*.local.json
+HARDWARE.LOCK
+HARDWARE.LOCK.log
