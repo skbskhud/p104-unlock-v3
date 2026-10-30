@@ -1,13 +1,16 @@
 @echo off
 rem ============================================================
-rem  Manual unlock without autostart: the hold process runs in the
-rem  foreground, keep this window open. Closing the window (or
-rem  Ctrl+C) stops the hold and the link falls back to Gen1 x4.
+rem  EXPERIMENTAL ONLY - NOT for daily use.
+rem  The hold process runs in the foreground: this window IS the
+rem  hold process. Closing it stops the hold and the link falls
+rem  back to Gen1 x4.
+rem  For normal use (close the window, keep Gen2 x4, survive a
+rem  reboot) use the ONE-CLICK script in this folder instead.
 rem  Pure ASCII + CRLF on purpose (see README, v1.0 mojibake lesson).
 rem ============================================================
 setlocal
 cd /d "%~dp0"
-title P104-100 manual unlock (keep this window open)
+title P104-100 manual unlock - EXPERIMENTAL (window must stay open)
 
 rem ---- administrator check ----
 net session >nul 2>&1
@@ -21,21 +24,16 @@ if errorlevel 1 (
 )
 
 echo ============================================================
-echo   P104-100  manual unlock  (no autostart)
+echo   P104-100 manual unlock  (EXPERIMENTAL, no autostart)
 echo ============================================================
 echo.
-echo  KEEP THIS WINDOW OPEN while you use the card.
-echo  This window IS the hold process: when you see the link is Gen2,
-echo  you may leave it open in the background and use the card.
-echo  Close it (or Ctrl+C) only when you are done - then the link
-echo  falls back to Gen1 x4 (this is normal, not a failure).
+echo  This window IS the hold process. Keep it open while you use
+echo  the card; closing it stops the hold (link falls back to Gen1 x4).
+echo  For normal use (close the window and keep Gen2 x4), use the
+echo  ONE-CLICK script in this folder instead.
 echo.
 echo  Only one instance may touch the card at a time, so any
 echo  running hold process is stopped first.
-echo.
-echo  If you want to CLOSE the window and keep Gen2, use the
-echo  ONE-CLICK script instead: it installs a background task, so
-echo  the window can be closed.
 echo.
 
 echo [1/2] Stopping a previous hold process (if any) ...

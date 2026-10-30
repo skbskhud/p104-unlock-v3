@@ -43,7 +43,7 @@ Download `P104-2.0x16-v1.1.zip` from the repo root or **Releases**:
 3. Wait for `SUCCESS`; then run `带宽测试.cmd` (H2D should be ≥1.4 GB/s).
 4. Check status any time: `状态.cmd` (read-only, no admin needed).
 5. Stop: `停止按住.cmd`; uninstall: `卸载.cmd` (keeps the driver policy keys by design).
-6. No autostart? Use `手动解锁-不装自启.cmd` (keep the window open; closing it stops the hold).
+6. No autostart? Use `手动解锁-仅实验用-窗口不能关.cmd` (EXPERIMENTAL only; the window must stay open - use the one-click script for daily use).
 
 > **Can I close the window?**
 > - **One-click script (recommended): yes.** After SUCCESS you can close the window; the hold process lives in a SYSTEM scheduled task and re-unlocks after reboot.
