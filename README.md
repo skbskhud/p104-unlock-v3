@@ -49,6 +49,8 @@ Download `P104-2.0x16-v1.1.zip` from the repo root or **Releases**:
 > - **One-click script (recommended): yes.** After SUCCESS you can close the window; the hold process lives in a SYSTEM scheduled task and re-unlocks after reboot.
 > - **Manual script: no.** That window *is* the hold process; closing it stops the hold (link falls back to Gen1 x4 — normal).
 > - **Re-running is safe:** if the card is already unlocked, the tool detects "already Gen2 x4 + x16 declared", skips all writes/resets, and only restarts the hold process (brief link fallback, recovers in seconds).
+> 
+> **Wait times:** autostart fires at boot **+90 s** and unlocks in **3-10 s** after that (wait 2-3 minutes after boot before checking); if the status says "recovering", wait **20 s**; `带宽测试.cmd` briefly drops the link for **10-20 s** and waits for recovery (up to 30 s).
 All `.cmd` files are pure ASCII + CRLF (the v1.1 encoding fix); the package README has the details.
 
 ## How it works (v1.1)
