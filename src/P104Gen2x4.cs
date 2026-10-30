@@ -98,9 +98,11 @@ class P104Gen2x4
     const int  T_TRIGGER_MIN_GAP_MS= 2000;    // 两次 CHANGE_SPEED/Retrain 的最小间隔
     const int  T_RESET_LATCH_MS    = 8000;    // 复位后观察 LCAP2 的窗口（实测 4s 就够，20s 纯浪费）
     const int  T_DEVICE_BACK_MS    = 30000;   // 复位后等设备回来
-    const int  T_HOLD_PERIOD_MS    = 150;     // 常驻看门狗周期（v1.0 是 20ms，无必要）
+    const int  T_HOLD_PERIOD_MS    = 20;      // 常驻看门狗周期（回到 v1.0 的 20ms 节奏：掉速后 20ms 内就补）
     const int  T_STATUS_PERIOD_MS  = 1000;    // 状态文件刷新周期
-    const int  T_WIDTH_RETRY_MS    = 3000;    // 宽度声明丢失后的补写限流（恢复窗口越短越好）
+    const int  T_WIDTH_RETRY_MS    = 500;     // 宽度声明丢失后的补写限流（恢复窗口越短越好）
+    const int  T_WIDTH_RETRAIN_MS  = 2000;    // ★ 物理宽度重训后的观察窗口（每次宽度 arm 成功后做）
+    const int  T_WIDTH_RETRAIN_GAP = 3000;    // ★ 两次物理宽度重训的最小间隔（≥3 秒防抖）
     const int  MAX_RESETS_PER_RUN  = 1;       // 一次运行最多复位 1 次
     const int  MAX_RESETS_PER_BOOT  = 2;      // 同一开机周期最多 2 次
     const long RESET_MIN_GAP_MS    = 600000;  // 两次复位最小间隔 10 分钟
@@ -203,6 +205,15 @@ class P104Gen2x4
     static long _lastTriggerTick = -100000;
     static long _lastWidthFixTick = -100000;
     static long _lastFixTick = -100000;
+    static long _lastWidthRetrainTick = -100000;   // ★ 上次"物理宽度重训"的 Tick（≥3 秒防抖）
+    /// <summary>
+    /// ★ v1.2d：物理宽度重训改为【每次链路恢复 / 重新 arm 宽度后都尝试】。
+    ///   目标机型是补过 AC 耦合电容、物理走线 x16 的机器 —— 每次恢复都必须重新训宽度。
+    ///   连续失败保护：每次"真的做了重训但没到 x16"计一次失败；连续 2 次失败即判定本机
+    ///   未补电容（4-lane），本进程内停止重训，避免反复掉速；成功一次则清零，后续继续允许重训。
+    /// </summary>
+    static int _physicalRetrainFailCount = 0;
+    const int MAX_PHYSICAL_RETRAIN_FAILS = 2;
 
     /// <summary>
     /// ★ 写一个"人看的"实时状态文件。按住进程每 ~1 秒更新一次。
@@ -710,12 +721,90 @@ class P104Gen2x4
             if (((lc >> 4) & 0x3F) == 16)
             {
                 Log("★ 宽度声明 x16 已生效（LNKCAP=0x" + lc.ToString("X8") + "）");
+                // ★ v1.2d 改动1：每次宽度声明（重新）arm 成功后都主动做"物理宽度重训"——
+                //   只改声明链路不会自己重新协商宽度，这里 retrain 一次让链路重新训宽度。
+                //   （≥3 秒防抖 + 连续 2 次失败即停 + 全程 try/catch，不阻塞主流程、不影响 Gen2/宽度回退逻辑）
+                WidthRetrainOnce();
                 return true;
             }
             Thread.Sleep(100); t += 100;
         }
         Mwr(_vaLink, OFF_LINKCFG0, LINKCFG0_SAFE);            // 整字安全回退
         Log("宽度声明未生效，已整字回退 0x8C040=0x" + LINKCFG0_SAFE.ToString("X8") + "（不影响 Gen2）");
+        return false;
+    }
+
+    /// <summary>
+    /// ★ v1.2d 改动1：物理宽度重训（每次宽度声明 arm 成功后调用）。
+    ///   背景：arm 只改"声明的最大宽度"，链路不会自己重新协商宽度 —— 补了 AC 耦合电容也还是 x4。
+    ///   做法：链路在 Gen2 时，对两端做一次 TLS=Gen2 + retrain，然后最多 2 秒看 LNKSTA 宽度位：
+    ///     · width==16 → 真的训到 x16（记成功、失败计数清零，后续每次恢复继续重训）；
+    ///     · 2 秒后仍 !=16 / 速率掉回 Gen1 / 读失败 → 记一次失败（连续 2 次后本进程停手）；
+    ///     · 期间速度掉回 Gen1 → 记录后退出本步骤，交给保持循环恢复（这里绝不死循环）。
+    ///   限流：两次尝试之间 ≥3 秒（防抖）；单次尝试最长阻塞 ≈100ms + 2s = 2.1 秒。
+    ///   安全：全程 try/catch；不改任何回退/复位逻辑；不写 0x8C040，只做 retrain。
+    /// </summary>
+    static bool WidthRetrainOnce()
+    {
+        // ★ v1.2d：连续 2 次未达 x16 → 本进程内不再重训（不写寄存器、不刷日志）。
+        if (_physicalRetrainFailCount >= MAX_PHYSICAL_RETRAIN_FAILS) return false;
+        try
+        {
+            if (!J2()) return false;                                     // 只有 Gen2 链路才做
+            if (NowTick() - _lastWidthRetrainTick < T_WIDTH_RETRAIN_GAP) return false;
+            _lastWidthRetrainTick = NowTick();
+            Log("物理宽度重训：对两端做一次 retrain，观察链路是否重新协商到 x16…");
+            WriteTlsBoth(_rb, _rd, _rf, _rcap);
+            RetrainBoth(_rb, _rd, _rf, _rcap);
+            Thread.Sleep(100);                                           // 100–300ms 后才开始轮询
+            int waited = 100;
+            while (waited <= T_WIDTH_RETRAIN_MS)
+            {
+                uint ls = LnkSta();
+                if (ls == 0xFFFFFFFF)
+                {
+                    Log("物理宽度重训后读 LNKSTA 失败（链路可能已断，交给保持循环处理）");
+                    return RetrainFailed();
+                }
+                if ((ls & 0xF) < 2)                                      // 速度掉回 Gen1
+                {
+                    Log("物理宽度重训期间链路速率回落 Gen1（LNKSTA=0x" + ls.ToString("X8")
+                        + "）—— 本步骤退出，交给保持循环恢复");
+                    return RetrainFailed();
+                }
+                uint w = (ls >> 4) & 0x3F;
+                if (w == 16)
+                {
+                    _physicalRetrainFailCount = 0;                       // 成功 → 清零，后续恢复继续允许重训
+                    Log("★ 物理链路宽度已训到 x16（LNKSTA width=16）");
+                    return true;
+                }
+                Thread.Sleep(100); waited += 100;
+            }
+            uint lsf = LnkSta();
+            uint wf = lsf == 0xFFFFFFFF ? 0u : (lsf >> 4) & 0x3F;
+            Log("物理宽度重训后 = x" + wf + "（未补电容时回落 x4 属正常，不影响 Gen2 使用）");
+            return RetrainFailed();
+        }
+        catch (Exception e)
+        {
+            Log("物理宽度重训异常（已忽略，不影响解锁）：" + e.Message);
+            return RetrainFailed();
+        }
+    }
+
+    /// <summary>
+    /// ★ v1.2d 改动2：记一次"重训未达 x16"的失败。
+    ///   连续 2 次失败 → 判定本机未补电容，本进程内停止重训（x16 机器成功一次就会清零重来）。
+    /// </summary>
+    static bool RetrainFailed()
+    {
+        _physicalRetrainFailCount++;
+        if (_physicalRetrainFailCount >= MAX_PHYSICAL_RETRAIN_FAILS)
+            Log("连续重训未达 x16（连续 " + _physicalRetrainFailCount + " 次失败），判定本机未补电容，本进程内停止重训");
+        else
+            Log("物理宽度重训未达 x16（连续失败 " + _physicalRetrainFailCount + "/" + MAX_PHYSICAL_RETRAIN_FAILS
+                + " 次），下次链路恢复后仍会重试");
         return false;
     }
 
@@ -801,7 +890,7 @@ class P104Gen2x4
         {
             Directory.CreateDirectory(Path.GetDirectoryName(StateFile));
             var sb = new StringBuilder();
-            sb.AppendLine("# P104Gen2x4 v1.1 只读基线快照 " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            sb.AppendLine("# P104Gen2x4 v1.2 只读基线快照 " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
             sb.AppendLine("lnkcap=0x" + LnkCap().ToString("X8"));
             sb.AppendLine("lnksta=0x" + LnkSta().ToString("X8"));
             sb.AppendLine("lcap2=0x" + Lcap2().ToString("X8"));
@@ -1320,9 +1409,22 @@ class P104Gen2x4
         // ★ 必须排除自身：本进程也叫 P104Gen2x4，否则 status 永远误报"按住进程运行中"。
         int myPid = Process.GetCurrentProcess().Id;
         var procs = new List<Process>();
-        foreach (var p in Process.GetProcessesByName("P104Gen2x4"))
-            if (p.Id != myPid) procs.Add(p);
-        bool holder = procs.Count > 0;
+        bool enumOk = true;
+        try
+        {
+            foreach (var p in Process.GetProcessesByName("P104Gen2x4"))
+            {
+                try { if (p.Id != myPid) procs.Add(p); } catch { }
+            }
+        }
+        catch { enumOk = false; }
+
+        // ★★ v1.2c 核心改动：进程枚举只作【辅助证据】★★
+        //   旧版把"枚举到进程"当成唯一依据，非管理员 / 跨会话（保持进程是 SYSTEM、session 0）时
+        //   可能枚举不到 → 误报"未在保持：保持进程没有运行"。
+        //   现在的主证据是【状态文件是否被 holder 每秒刷新】：文件新鲜 ⇒ holder 一定在写，
+        //   与权限、会话、进程名都无关。进程枚举用来补充 PID 和显示信息。
+        bool holderSeen = procs.Count > 0;
 
         // ★ 计划任务查询分三种结果（修 BUG 2：非管理员曾误报"未注册"）：
         //     taskOk=true                  → 已注册
@@ -1338,7 +1440,6 @@ class P104Gen2x4
         string realTime = null;
         DateTime realStamp = DateTime.MinValue;
         bool hasStamp = false;
-        bool pending = false;
         try
         {
             if (File.Exists(StatusOkFile))
@@ -1354,7 +1455,6 @@ class P104Gen2x4
                         if (ln.Contains("8.0GT/s")) realSpd = 3;
                         else if (ln.Contains("5.0GT/s")) realSpd = 2;
                         else if (ln.Contains("2.5GT/s")) realSpd = 1;
-                        if (realGen == null) pending = true;
                     }
                     else if (ln.Contains("当前链路宽度"))
                     {
@@ -1371,26 +1471,44 @@ class P104Gen2x4
         }
         catch { }
 
-        bool stale = hasStamp && (DateTime.Now - realStamp).TotalSeconds > 15;
-        string staleMsg = null;
-        if (stale) { staleMsg = "状态数据已过期（上次更新 " + realTime + "，超过 15 秒未刷新），当前状态未知"; realGen = null; pending = false; }
+        // ★★ v1.2c 核心：新鲜度阈值 15 秒 → 5 秒 ★★
+        //   保持进程每 ~1 秒刷新一次状态文件，5 秒足够判定"它还在写"；超过 5 秒未刷新，
+        //   这份数据就不再是可信的"当前状态"（旧版 15 秒会让刚停掉的进程继续"看起来正常"）。
+        bool fresh = hasStamp && (DateTime.Now - realStamp).TotalSeconds <= 5;
+        int ageSec = hasStamp ? (int)(DateTime.Now - realStamp).TotalSeconds : -1;
+        // 过期数据绝不当作当前状态 —— 否则会拿很久以前的 Gen2 结论骗人。
+        if (!fresh) { realGen = null; realSpd = 0; }
+        // ★ 判定"是否在保持"：状态文件新鲜 ⇒ 一定有一个 holder 在每秒写它（与权限/会话无关）。
+        bool inHold = holderSeen || fresh;
 
         // ---------- ② 回退：从日志读最近一次实测 ----------
         var st = ReadLastStateFromLog();
 
+        // 只有【新鲜】的文件才算当前状态；过期数据只作为"历史记录"显示，不参与判定。
         string resGen = null; uint resSpd = 0, resWid = 0;
-        if (realGen != null) { resGen = realGen; resSpd = realSpd; resWid = realWidth; }
-        else if (st != null) { resGen = SpeedName(st.Item2); resSpd = st.Item2; resWid = st.Item3; }
+        if (fresh && realGen != null) { resGen = realGen; resSpd = realSpd; resWid = realWidth; }
+        else if (!fresh && st != null) { resGen = SpeedName(st.Item2); resSpd = st.Item2; resWid = st.Item3; }
 
+        // ---------- RESULT 判定（v1.2c：以"数据新鲜度"为主证据，进程枚举为辅）----------
+        //   !inHold                → 进程没有、数据也不新鲜 = 确实没在保持
+        //   新鲜 + 没枚举到进程    → 文件新鲜必是 holder 写的，仍按已解锁/未解锁判定
+        //   没新鲜 + 枚举到进程    → 进程在但状态不刷新 = 状态未知（不再谎报"已解锁"）
         string resultLine;
-        if (!holder) resultLine = "UNKNOWN   (hold process NOT running - link will fall back to Gen1)";
-        else if (stale) resultLine = "UNKNOWN   (status data is stale - re-run in a few seconds)";
-        else if (resGen == null) resultLine = "UNKNOWN   (initializing / retrying - wait 1-2 minutes)";
-        else if (resSpd >= 3) resultLine = string.Format("Gen3 x{0}  (8.0 GT/s)   <-- UNLOCKED", resWid);
-        else if (resSpd >= 2) resultLine = string.Format("Gen2 x{0}  (5.0 GT/s)   <-- UNLOCKED", resWid);
-        else resultLine = string.Format("Gen1 x{0}  (2.5 GT/s)   <-- LOCKED (target: Gen2)", resWid);
+        if (!inHold)
+            resultLine = "未在保持：保持进程没有运行（链路会回到 Gen1，这是正常的）";
+        else if (!fresh && holderSeen)
+            resultLine = "状态未知：保持进程在运行，但状态数据超过 5 秒未刷新（可能卡在异常状态，等 10 秒再查）";
+        else if (resGen == null)
+            resultLine = "状态未知：正在解锁/重试，请等 1-2 分钟再查";
+        else if (resSpd >= 3)
+            resultLine = string.Format("已解锁：Gen3 x{0}（8.0 GT/s）", resWid);
+        else if (resSpd >= 2)
+            resultLine = string.Format("已解锁：Gen2 x{0}（5.0 GT/s）", resWid);
+        else
+            resultLine = string.Format("未解锁：当前 Gen1 x{0}（目标 Gen2 x4）", resWid);
 
-        resultLine = resultLine + (realMaxWidth >= 16 ? "   [声明宽度 x16]" : "");
+        // ★ 宽度声明只在数据新鲜时附加 —— 不新鲜时不显示，避免"未在保持 + 声明 x16"自相矛盾。
+        resultLine = resultLine + (fresh && realMaxWidth >= 16 ? "   [声明宽度 x16]" : "");
 
         // ============ 顶部：醒目的 RESULT 块（修 BUG 3）============
         Console.WriteLine("============================================================");
@@ -1402,16 +1520,30 @@ class P104Gen2x4
         Console.WriteLine("============================================================");
         Console.WriteLine();
 
-        if (realGen != null)
+        // ---------- 判定依据（v1.2c 新增：把"为什么是这个结论"摊开，方便人工核对）----------
+        string dataPart;
+        if (hasStamp)
+            dataPart = "数据时间 " + realTime + (fresh ? "（新鲜 ≤5s）" : "（已过期 " + ageSec + "s，>5s）");
+        else
+            dataPart = "数据时间 无（状态文件不存在或缺少时间戳）";
+        string holderPart;
+        if (holderSeen) holderPart = "保持进程 运行中 PID " + procs[0].Id;
+        else if (!enumOk || !admin) holderPart = "保持进程 未检出（权限受限，按数据新鲜度判定）";
+        else holderPart = "保持进程 未运行";
+        string taskPart = taskOk ? "计划任务 已注册"
+                        : taskUnknown ? "计划任务 无法查询（需要管理员）"
+                        : "计划任务 未注册";
+        Console.WriteLine("  判定依据：" + dataPart + "  |  " + holderPart + "  |  " + taskPart);
+        Console.WriteLine();
+
+        if (fresh && realGen != null)
         {
-            if (staleMsg != null) Console.WriteLine("  [注意] " + staleMsg);
-            if (pending && realGen == null) Console.WriteLine("  状态文件：正在解锁/重试（还没出结果）");
             Console.WriteLine("  当前链路宽度：x" + realWidth + "   （判据 LNKSTA）");
             Console.WriteLine("  声明最大宽度：x" + realMaxWidth + "   （判据 LnkCap MAXWIDTH）"
                 + (realMaxWidth >= 16 ? "   <-- 宽度声明 x16 已生效" : ""));
             Console.WriteLine("  数据时间：" + realTime);
             // ★ 恢复期提示：带宽测试/CUDA 初始化会让驱动把链路临时降回 Gen1，看门狗 10-20 秒内自动恢复。
-            if (holder && (realSpd < 2 || realMaxWidth < 16))
+            if (holderSeen && (realSpd < 2 || realMaxWidth < 16))
             {
                 Console.WriteLine();
                 Console.WriteLine("  [正在自动恢复] 链路刚被外部程序（常见于 CUDA / 带宽测试）临时降速，");
@@ -1420,64 +1552,65 @@ class P104Gen2x4
             }
             Console.WriteLine();
         }
+        else if (fresh && realGen == null)
+        {
+            Console.WriteLine("  状态文件：正在解锁/重试（还没出结果）");
+            Console.WriteLine();
+        }
         else if (st != null)
         {
-            Console.WriteLine("  最近一次实测（{0}）：", st.Item1);
+            Console.WriteLine("  最近一次实测（{0}，历史数据，不参与当前判定）：", st.Item1);
             Console.WriteLine("     速率 = {0}    宽度 = x{1}    目标速率 = {2}",
                 SpeedName(st.Item2), st.Item3, SpeedName(st.Item4));
             Console.WriteLine();
         }
 
         // ---------- ③ 按住进程 / 计划任务 ----------
-        Console.WriteLine("  按住进程 ....... {0}", holder
-            ? string.Format("运行中（PID {0}）", procs[0].Id) : "未运行");
+        Console.WriteLine("  按住进程 ....... {0}", holderSeen
+            ? string.Format("运行中（PID {0}）", procs[0].Id)
+            : (fresh ? "未检出（状态数据新鲜，判定为仍在运行；可能权限受限看不到 SYSTEM 进程）" : "未运行"));
         if (taskOk) Console.WriteLine("  开机自启任务 ... 已注册（开机+90 秒 / 登录+120 秒 / 每 5 分钟自愈）");
         else if (taskUnknown) Console.WriteLine("  开机自启任务 ... 无法查询（需要管理员权限才能查询计划任务）");
         else Console.WriteLine("  开机自启任务 ... 未注册");
         Console.WriteLine();
 
-        // ---------- ④ 结论 ----------
+        // ---------- ④ 结论（v1.2c：全部以 inHold / fresh 为准，不再单看进程枚举）----------
         Console.WriteLine("============================================================");
-        if (holder && (taskOk || taskUnknown) && resGen != null && resSpd >= 2)
+        if (!inHold)
+        {
+            Console.WriteLine("  结论：【未在保持】保持进程没有运行，状态数据也不新鲜");
+            Console.WriteLine("        → 链路会掉回 Gen1（这是正常的，不是故障）");
+            Console.WriteLine("        → 右键运行 自动解锁.cmd（管理员），或运行：");
+            Console.WriteLine("          C:\\Program Files\\P104Gen2x4\\P104Gen2x4.exe");
+        }
+        else if (!fresh)
+        {
+            Console.WriteLine("  结论：【状态未知】保持进程在运行，但状态数据超过 5 秒未刷新");
+            Console.WriteLine("        可能卡在异常状态（例如正在复位/驱动重载），等 10 秒再跑一次本命令。");
+            Console.WriteLine("        若持续这样超过 1 分钟，右键运行 自动解锁.cmd（管理员）。");
+        }
+        else if (resGen == null)
+        {
+            Console.WriteLine("  结论：【正在解锁/重试】保持进程在写状态，但还没有出结果。");
+            Console.WriteLine("        刚启动/正在恢复时正常，等 1-2 分钟再查。");
+            Console.WriteLine("        如果超过 5 分钟还是这样，右键运行 自动解锁.cmd（管理员）。");
+        }
+        else if (resSpd >= 2)
         {
             Console.WriteLine("  结论：【正常】Gen2 已解锁，且正在保持");
+            if (!holderSeen)
+                Console.WriteLine("        （进程枚举未检出，但状态数据新鲜 ≤5s，判定保持进程仍在运行）");
+            if (!taskOk && !taskUnknown)
+                Console.WriteLine("        注：开机自启任务未注册 → 右键运行 自动解锁.cmd（管理员）");
             Console.WriteLine("        带宽参考：H2D 约 1.55 GB/s   D2H 约 1.69 GB/s");
             Console.WriteLine("        （Gen1 x4 时只有 0.78 / 0.85 GB/s）");
         }
-        else if (holder && (taskOk || taskUnknown) && st != null && st.Item4 == 2)
-        {
-            Console.WriteLine("  结论：【正常】Gen2 已解锁");
-            Console.WriteLine("        日志里那一行显示 Gen1，通常是采样时刚好空闲降速，");
-            Console.WriteLine("        空闲降速是省电行为，有负载会自动升回 Gen2。");
-            Console.WriteLine("        判据看「目标速率 = 5.0GT/s」即可。");
-        }
-        else if (holder && (taskOk || taskUnknown) && resGen == null)
-        {
-            Console.WriteLine("  结论：【看起来正常】但还没有可用的实测记录");
-            Console.WriteLine("        按住进程在跑。等 1 分钟后重跑本命令看速率。");
-        }
-        else if (pending && realGen == null && resGen == null)
-        {
-            Console.WriteLine("  结论：【正在解锁/重试】保持进程刚启动或正在反复复位，等 1-2 分钟再查。");
-            Console.WriteLine("        如果超过 5 分钟还是这样，重跑 install.cmd（管理员）。");
-        }
-        else if (!holder)
-        {
-            Console.WriteLine("  结论：【未在保持】按住进程没有运行");
-            Console.WriteLine("        → 链路会掉回 Gen1（这是正常的，不是故障）");
-            Console.WriteLine("        → 双击 C:\\Program Files\\P104Gen2x4\\P104Gen2x4.exe");
-            Console.WriteLine("          或重新运行 install.cmd（需要管理员）");
-        }
         else
         {
-            Console.WriteLine("  结论：【需要检查】");
-            if (!taskOk && !taskUnknown)
-            {
-                Console.WriteLine("        - 开机自启任务未注册");
-                Console.WriteLine("          → 以管理员运行 install.cmd");
-            }
-            if (resGen == null)
-                Console.WriteLine("        - 没有可用的实测记录");
+            Console.WriteLine("  结论：【已解锁但当前 Gen1】状态数据新鲜，链路此刻是 Gen1 x" + resWid);
+            Console.WriteLine("        声明已解锁；空闲降速/刚被外部程序降速是正常省电行为，");
+            Console.WriteLine("        有负载会自动升回 Gen2，看门狗也在补写。等 20 秒再查。");
+            Console.WriteLine("        判据看状态文件里的「目标速率 = 5.0GT/s」（TLS=2）。");
         }
         Console.WriteLine("============================================================");
         Console.WriteLine();
@@ -1490,17 +1623,12 @@ class P104Gen2x4
         Console.WriteLine("     右键 status.cmd → 以管理员身份运行");
         Console.WriteLine("     或运行：  bin\\P104Gen2x4.exe -diag");
         Console.WriteLine();
-        Console.WriteLine("  不这样做也能判断 —— 上面的结论就是读工具日志得出的，同样可靠。");
+        Console.WriteLine("  不这样做也能判断 —— 上面的结论以状态文件新鲜度（≤5 秒）+ 日志为准，同样可靠。");
         Console.WriteLine("  本命令不需要管理员，也不会干扰正在运行的按住进程。");
         Console.WriteLine("  ------------------------------------------------------------");
 
-        // ============ 底部：再重复一次 RESULT（修 BUG 3）============
-        //   终端会停在最后一行，所以结论必须在【最后】再出现一次。
-        Console.WriteLine();
-        Console.WriteLine("============================================================");
-        Console.WriteLine("   RESULT:  " + resultLine);
-        Console.WriteLine("============================================================");
-        Console.WriteLine("   >>> If you only read one line, read the RESULT above. <<<");
+        // ============ 底部提示（v1.2c：去掉重复的第二条 RESULT，只保留顶部一条）============
+        Console.WriteLine("   >>> If you only read one line, read the RESULT at the top. <<<");
         return 0;
     }
 
@@ -1824,6 +1952,10 @@ class P104Gen2x4
         Console.WriteLine("  P104-100  PCIe 真实带宽实测（CUDA，无需 Python）");
         Console.WriteLine("============================================================");
         Console.WriteLine();
+        IntPtr ctx = IntPtr.Zero;
+        bool ctxLive = false;
+        int holderCount = 0;
+        int rc = 0;
         try
         {
             if (cuInit(0) != 0) { Console.WriteLine("  [跳过] 没有 CUDA 驱动（nvcuda.dll 不可用）"); return 1; }
@@ -1846,14 +1978,12 @@ class P104Gen2x4
             }
             if (target < 0) { Console.WriteLine("  [跳过] 没有找到 P104（安全约定：绝不测别的卡）"); return 1; }
             Console.WriteLine("  目标设备 : " + targetName);
-            IntPtr ctx;
             if (cuCtxCreate_v2(out ctx, 0, target) != 0) { Console.WriteLine("  [失败] 创建 CUDA 上下文失败（可能被别的进程占用）"); return 1; }
-            try
+            ctxLive = true;
             {
                 // ★ v1.1：CUDA 上下文初始化会让 NVIDIA 驱动把 0x8C040.SPEED 降回 2.5GT，
                 //   正在运行的按住进程会在约 2 秒内把链路恢复 Gen2。先等它，否则测到的是 Gen1 带宽
                 //   （旧版测出 0.79 而实际链路是 Gen2，就是这个原因）。
-                int holderCount = 0;
                 foreach (var pr in Process.GetProcessesByName("P104Gen2x4"))
                     if (pr.Id != Process.GetCurrentProcess().Id) holderCount++;
                 if (holderCount > 0)
@@ -1863,10 +1993,21 @@ class P104Gen2x4
                 }
                 const int MB = 64;
                 ulong size = (ulong)MB * 1024 * 1024;
-                ulong dptr;
-                if (cuMemAlloc_v2(out dptr, (UIntPtr)size) != 0) { Console.WriteLine("  [失败] 显存分配失败"); return 1; }
-                IntPtr host;
-                if (cuMemAllocHost_v2(out host, (UIntPtr)size) != 0) { cuMemFree_v2(dptr); Console.WriteLine("  [失败] 页锁定内存分配失败"); return 1; }
+                ulong dptr = 0;
+                IntPtr host = IntPtr.Zero;
+                if (cuMemAlloc_v2(out dptr, (UIntPtr)size) != 0)
+                {
+                    Console.WriteLine("  [失败] 显存分配失败");
+                    rc = 1;
+                }
+                else if (cuMemAllocHost_v2(out host, (UIntPtr)size) != 0)
+                {
+                    cuMemFree_v2(dptr);
+                    Console.WriteLine("  [失败] 页锁定内存分配失败");
+                    rc = 1;
+                }
+                else
+                {
                 try
                 {
                     // ★ v1.1：如果按住进程在跑，CUDA 上下文会让链路短暂掉到 Gen1；
@@ -1901,32 +2042,39 @@ class P104Gen2x4
                     if (h2d >= 1.2) Console.WriteLine("  RESULT: Gen2 x4 带宽达标（" + h2d.ToString("F2") + " GB/s）");
                     else if (h2d >= 0.4) Console.WriteLine("  RESULT: 只有 Gen1 x4 带宽（" + h2d.ToString("F2") + " GB/s）—— 链路没上 Gen2");
                     else Console.WriteLine("  RESULT: 带宽异常低（" + h2d.ToString("F3") + " GB/s）");
-
-                    // ★ v1.1：CUDA 上下文会让驱动把链路临时降回 Gen1（声明也会临时回 x4）。
-                    //   测试结束后等保持进程把链路恢复，再退出 —— 否则用户紧接着跑 状态.cmd 会看到"x4"而以为坏了。
-                    if (holderCount > 0)
-                    {
-                        Console.WriteLine();
-                        Console.WriteLine("  测试完成 —— 等待保持进程恢复链路（Gen2 + 宽度声明 x16，最多 30 秒）…");
-                        bool restored = WaitHolderRestored(30000);
-                        Console.WriteLine(restored
-                            ? "  链路已恢复：Gen2 x4 + 声明宽度 x16。现在跑 状态.cmd 会显示正常。"
-                            : "  注意：30 秒内还没恢复到 Gen2；保持进程会继续自动重试（这是正常现象，不是解锁失效）。");
-                    }
-                    return 0;
                 }
                 finally { cuMemFreeHost_v2(host); cuMemFree_v2(dptr); }
+                }
             }
-            finally { cuCtxDestroy_v2(ctx); }
         }
-        catch (Exception e) { Console.WriteLine("  [失败] " + e.Message); return 1; }
+        catch (Exception e) { Console.WriteLine("  [失败] " + e.Message); rc = 1; }
+        finally
+        {
+            // ★ v1.2 改动2：先销毁 CUDA 上下文。上下文活着时 NVIDIA 驱动会把链路压在 Gen1，
+            //   所以要"先销毁、再等恢复"——否则等恢复的过程中上下文又把速率打下去，
+            //   退出后还要再恢复一次（用户紧接着跑 状态.cmd 就会看到 x4）。
+            if (ctxLive) { cuCtxDestroy_v2(ctx); ctxLive = false; }
+        }
+
+        // ★ v1.2 改动2：上下文已销毁，这时才等保持进程把链路恢复到 Gen2 + 宽度声明 x16。
+        if (rc == 0 && holderCount > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("  CUDA 上下文已销毁 —— 等待保持进程恢复链路（Gen2 + 宽度声明 x16，最多 30 秒）…");
+            Thread.Sleep(1000);            // 先让状态文件被重写一次，避免读到销毁前的旧内容
+            bool restored = WaitHolderRestored(29000);
+            Console.WriteLine(restored
+                ? "  链路已恢复：Gen2 x4 + 声明宽度 x16。现在跑 状态.cmd 会显示正常。"
+                : "  注意：30 秒内还没恢复到 Gen2；保持进程会继续自动重试（这是正常现象，不是解锁失效）。");
+        }
+        return rc;
     }
 
     /// <summary>打印用法。★ v1.1 修复：未知参数/ -help 绝不能落入默认 bringup（旧版会直接复位显卡）。</summary>
     static void Usage()
     {
         string[] lines = {
-            "P104Gen2x4 v1.1 —— P104-100 PCIe Gen2 x4 解锁 + 宽度声明 x16",
+            "P104Gen2x4 v1.2 —— P104-100 PCIe Gen2 x4 解锁 + 宽度声明 x16",
             "",
             "用法:",
             "  P104Gen2x4.exe                解锁并常驻保持（默认，需要管理员）",
@@ -2007,7 +2155,7 @@ class P104Gen2x4
         if (mode == "install") return DoInstall();
         if (mode == "uninstall") return DoUninstall();
 
-        Log("=== P104Gen2x4 v1.1 启动，模式=" + mode + (Quiet ? "（quiet）" : "") + " ===");
+        Log("=== P104Gen2x4 v1.2 启动，模式=" + mode + (Quiet ? "（quiet）" : "") + " ===");
 
         // ★ 全局单实例锁：同一时刻只允许一个非只读实例映射 BAR0。
         bool created;
@@ -2057,7 +2205,7 @@ class P104Gen2x4
         if (dryRun)
         {
             Log("[dry-run] 只读快照完成，未写任何寄存器。");
-            Log("[dry-run] 计划: live 写组 → (失败才) 1 次整卡复位 → TLS/retrain → 宽度声明 x16 → 150ms 保持");
+            Log("[dry-run] 计划: live 写组 → (失败才) 1 次整卡复位 → TLS/retrain → 宽度声明 x16 → 20ms 保持");
             Log("[dry-run] 当前判据: J1=" + J1() + " J2=" + J2() + " J3=" + J3()
                 + "  本开机周期已复位 " + _resetsThisBoot + "/" + MAX_RESETS_PER_BOOT + " 次");
             CloseAll();
@@ -2074,7 +2222,7 @@ class P104Gen2x4
             return ok ? 0 : 7;
         }
 
-        Log(ok ? "进入常驻按住循环（150ms 看门狗，仅偏离时补写）" : "未达成，仍进入保持循环持续尝试（不再复位）");
+        Log(ok ? "进入常驻按住循环（20ms 看门狗，仅偏离时补写）" : "未达成，仍进入保持循环持续尝试（不再复位）");
         return HoldLoop();
     }
 
@@ -2119,7 +2267,7 @@ class P104Gen2x4
                 bool j1 = (l2 & 0x6) == 0x6, gen2 = (ls & 0xF) >= 2;
 
                 // 2) 声明保持：偏离才补写，≥2s 限流
-                if (!j1 && NowTick() - _lastFixTick >= 2000)
+                if (!j1 && NowTick() - _lastFixTick >= 200)
                 {
                     Log("检测到 Gen2 声明丢失（LCAP2=0x" + l2.ToString("X8") + "）→ live 补写");
                     ApplyLiveGroup("看门狗补声明");
@@ -2128,7 +2276,7 @@ class P104Gen2x4
                 else
                 {
                     uint cfg = Mrd(_vaLink, OFF_LINKCFG0);
-                    if ((cfg & 0xC0000u) != 0x40000u && NowTick() - _lastFixTick >= 2000)
+                    if ((cfg & 0xC0000u) != 0x40000u && NowTick() - _lastFixTick >= 200)
                     {
                         WriteSpeedGen2();
                         _lastFixTick = NowTick();
@@ -2140,14 +2288,14 @@ class P104Gen2x4
                 {
                     if (gen2Since >= 0) { gen2Since = -1; _lastTriggerTick = -100000; }  // 刚掉速：允许立刻重训一次
                     DisarmWidthForSpeed();
-                    if (NowTick() - _lastTriggerTick >= T_TRIGGER_MIN_GAP_MS)
+                    if (NowTick() - _lastTriggerTick >= 20)   // 20ms 循环：掉速后立即重训，不再等 2 秒
                     {
                         WriteTlsBoth(_rb, _rd, _rf, _rcap);
                         RetrainBoth(_rb, _rd, _rf, _rcap);
                         _lastTriggerTick = NowTick();
                         _rewrites++;
                     }
-                    if (++lowSpeedStreak >= 40)
+                    if (++lowSpeedStreak >= 300)   // 20ms × 300 ≈ 6 秒（与原来 150ms×40 等价）
                     {
                         lowSpeedStreak = 0;
                         liveRetry++;
@@ -2167,7 +2315,7 @@ class P104Gen2x4
                 }
 
                 // 4) 宽度声明保持：先确认 Gen2 已连续稳定 ≥3 秒、且距上次尝试 ≥3 秒（避免 ping-pong）
-                if (WidthEnabled && gen2 && gen2Since > 0 && NowTick() - gen2Since >= 3000 &&
+                if (WidthEnabled && gen2 && gen2Since > 0 && NowTick() - gen2Since >= 500 &&
                     ((lc >> 4) & 0x3F) != 16 && NowTick() - _lastWidthFixTick >= T_WIDTH_RETRY_MS)
                 {
                     WidthArm();
@@ -2239,7 +2387,7 @@ class P104Gen2x4
 @"<?xml version=""1.0"" encoding=""UTF-16""?>
 <Task version=""1.2"" xmlns=""http://schemas.microsoft.com/windows/2004/02/mit/task"">
   <RegistrationInfo>
-    <Description>P104-100 PCIe Gen2 x4 解锁（v1.1：live 快路径 + 兜底复位 + 150ms 保持）</Description>
+    <Description>P104-100 PCIe Gen2 x4 解锁（v1.2：live 快路径 + 兜底复位 + 20ms 保持）</Description>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>

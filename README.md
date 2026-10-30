@@ -1,109 +1,163 @@
-# P104-100: PCIe Gen2 x4 unlock + x16 width declaration (Windows)
+# P104-100: PCIe Gen2 x4 unlock + x16 width declaration (Windows, full open source)
 
-**English** | [中文](README.zh-CN.md)
+[中文](README.zh-CN.md) | **English**
 
 > Windows tool for the NVIDIA **P104-100** (GP104 mining card, `10DE:1B87`):
-> unlock the link from factory **Gen1 x4 (≈0.78 GB/s)** to **Gen2 x4 (≈1.57 GB/s measured)**,
-> write the **x16 width declaration** (`LnkCap maxwidth = 16`), and keep it with a resident watchdog.
->
-> **Since v3.2 this repo is fully open source**: executable tool + methodology + Python experiment toolchain.
-> See [`docs/07-破解方法论与AI-Agent指南.md`](docs/07-破解方法论与AI-Agent指南.md) (methodology, Chinese).
+> factory **Gen1 x4 (≈0.78 GB/s)** → **Gen2 x4 (≈1.55/1.69 GB/s measured)**,
+> plus the **x16 width declaration** (`LnkCap maxwidth = 16`), kept alive by a resident watchdog.
+> Measured drop recovery: **Gen2 in 0.23–0.25 s, x16 declaration in 0.73–0.84 s**.
 
-## Current version: v3.2 (tool v1.1)
+## Current version: v3.3 (tool v1.2)
 
-> ⚠️ **The v3.1 "2.0x16" Manual/Auto packages are deprecated — do not use them.**
-> They could not latch reliably on many machines (the write group only covered the
-> "card reset, then wait for the driver to rebind" path). Sorry for the trouble this caused.
-> Use `P104-2.0x16-v1.1.zip` from v3.2 instead — it uses a live-write path and normally needs **no reset**.
+> ⚠️ **The v3.1 "2.0x16" Manual/Auto packages (v1.0) are deprecated — do not use them.**
+> They only worked via "full card reset, then wait for the driver to rebind" (very low success rate).
+> Use `P104-2.0x16-v1.2.zip` from v3.3 instead — live writes, normally **no reset**. Old packages remain
+> as history only.
 
-## Measured results (2026-10-30, single card, CPU-attached x16 slot)
+Changes in v1.2 vs v1.1:
+
+| Item | v1.1 (v3.2) | v1.2 (v3.3) |
+|---|---|---|
+| Watchdog | 150 ms | **20 ms** |
+| Drop → Gen2 recovery | ~4 s | **0.23–0.25 s** |
+| Drop → x16 declaration recovery | 12–16 s | **0.73–0.84 s** |
+| Width retrain | none | **after every recovery/re-arm, until `LNKSTA width=16`** (2 consecutive misses → stop for this process) |
+| Status panel | English RESULT | **Chinese verdict + evidence line** (data freshness/process/task; works non-admin) |
+| `带宽测试.cmd` | printed "recovered" then dropped again on exit | **destroys CUDA context first, then waits, then prints** |
+| Script name | `一键解锁.cmd` | **`自动解锁.cmd`** |
+
+> ⚠️ **x16 is still declaration-layer**: `LnkCap maxwidth=16` is really written; with only 4 physical lanes the
+> link stays x4 and bandwidth does not increase. v1.2 adds "retrain after arm", so **after AC coupling
+> capacitors are installed** it will attempt real physical x16; results will be posted in both repos.
+
+## Measured results (2026-10-30/31, single card, CPU-attached x16 slot)
 
 | Item | Result |
 |---|---|
-| Unlock path | **live write group, no card reset required** |
-| Factory state → Gen2 | **0 resets, ~3 s** (two cold-state runs: 7.4 s / 2.8 s, both PASS) |
+| Unlock path | **live write group, no full-card reset** (0 resets; ~5 s from factory state after restart) |
 | PCIe link | **Gen2 x4** (`LNKSTA = 0x00001042`) |
-| `LnkCap` declaration | maxspeed Gen2, **maxwidth = x16** (`0x00454D02`) |
-| CUDA bandwidth (pinned) | **H2D 1.570 / D2H 1.673 GB/s** (Gen1 x4 reference: 0.78 / 0.85) |
-| Resident keep-alive | 150 ms watchdog, writes only on deviation; 29 min continuous hold in earlier experiments |
-| Autostart | scheduled task: boot +90 s / logon +120 s / retry every 5 min |
-| Reset fallback | only if live path fails: max 1 per run (max 2 per boot cycle, ≥10 min apart) |
+| `LnkCap` declaration | maxspeed = Gen2, **maxwidth = x16** (`0x00454D02`) |
+| CUDA bandwidth (pinned) | **H2D 1.55 / D2H 1.67 GB/s** (Gen1 x4 reference 0.78 / 0.85) |
+| Drop recovery (v1.2) | Gen2 **0.23 / 0.23 / 0.25 s**; x16 declaration **0.73 / 0.82 / 0.84 s** |
+| Gen1 dwell per drop | median **0 s**, mean 0.9 s |
+| Resident hold | 20 ms watchdog, writes only on deviation |
+| Autostart | scheduled task: boot +90 s / logon +120 s / retry every 5 min (cold-boot verified on v1.1) |
+| Reset fallback | only after repeated live failures: max 1 per run, max 2 per boot, ≥10 min apart |
 
-> ⚠️ **x16 is declaration-layer only.** `LnkCap maxwidth = 16` is really written, but the card has only
-> 4 physical lanes; the actual link stays x4 and **bandwidth does not increase because of the x16 declaration**.
-> A physical-x16 experiment (AC coupling capacitors) is planned for **2026-10-31 (Saturday)** and will be
-> reported in this repo.
+Register fingerprints (same card/slot, verify with `状态.cmd`):
+
+```
+               Gen1 factory     Gen2 unlocked
+LNKSTA         0x00001041       0x00001042      <- current link speed
+LNKCAP2        0x00000002       0x00000006      <- declared speeds
+LNKCAP         0x00463C41       0x00454D02      <- maxspd=Gen2, maxwidth=16
+LINK_CONFIG_0  0x20585800       0x20545800      <- 0x8C040 (SPEED=1)
+```
+
+> Note: GPU-Z / nvidia-smi "supported speed/width" are **driver-reported values** and are unreliable on this
+> card (often shows 1.1 x4). Trust the raw `LNKSTA` / `LNKCAP` values from `状态.cmd`.
 
 ## Download & usage
 
-Download `P104-2.0x16-v1.1.zip` from the repo root or **Releases**:
+Download `P104-2.0x16-v1.2.zip` from **Releases** (or the same-named folder in this repo), extract fully, then:
 
-1. Extract the whole zip to a local disk (do not run inside the archive).
-2. Right-click `一键解锁.cmd` → **Run as administrator**.
-3. Wait for `SUCCESS`; then run `带宽测试.cmd` (H2D should be ≥1.4 GB/s).
-4. Check status any time: `状态.cmd` (read-only, no admin needed).
-5. Stop: `停止按住.cmd`; uninstall: `卸载.cmd` (keeps the driver policy keys by design).
-6. No autostart? Use `手动解锁-仅实验用-窗口不能关.cmd` (EXPERIMENTAL only; the window must stay open - use the one-click script for daily use).
+1. Right-click **`自动解锁.cmd`** → **Run as administrator**;
+2. After `SUCCESS` you can **close the window** — the hold process lives in a SYSTEM scheduled task and
+   re-unlocks after reboot;
+3. Verify with `状态.cmd`:
+   ```
+   RESULT: 已解锁：Gen2 x4（5.0 GT/s）   [声明宽度 x16]
+   ```
+4. Bandwidth: `带宽测试.cmd` (≈1.55/1.69 GB/s).
 
-> **Can I close the window?**
-> - **One-click script (recommended): yes.** After SUCCESS you can close the window; the hold process lives in a SYSTEM scheduled task and re-unlocks after reboot.
-> - **Manual script: no.** That window *is* the hold process; closing it stops the hold (link falls back to Gen1 x4 — normal).
-> - **Re-running is safe:** if the card is already unlocked, the tool detects "already Gen2 x4 + x16 declared", skips all writes/resets, and only restarts the hold process (brief link fallback, recovers in seconds).
-> 
-> **Wait times:** autostart fires at boot **+90 s** and unlocks in **3-10 s** after that (wait 2-3 minutes after boot before checking); if the status says "recovering", wait **20 s**; `带宽测试.cmd` briefly drops the link for **10-20 s** and waits for recovery (up to 30 s).
-All `.cmd` files are pure ASCII + CRLF (the v1.1 encoding fix); the package README has the details.
+| Script | Purpose |
+|---|---|
+| `自动解锁.cmd` | install + register task + unlock + wait (admin; **recommended**, window can be closed) |
+| `状态.cmd` | read-only link/declaration/hold status with evidence line (no admin needed) |
+| `带宽测试.cmd` | CUDA bandwidth test (briefly drops the link, waits for recovery) |
+| `停止按住.cmd` | stop holding (link falls back to Gen1 — normal) |
+| `卸载.cmd` | uninstall task/drivers (policy keys kept by default) |
+| `手动解锁-仅实验用-窗口不能关.cmd` | experimental only: foreground hold, **window must stay open** |
 
-## How it works (v1.1)
+**Can I close the window?** One-click **yes**; manual **no** (that window *is* the hold process).
+Re-running is safe: if already unlocked it skips writes/resets and only restarts the hold process.
 
-1. Map GPU BAR0 via BYOVD drivers (WinRing0 / ThrottleStop);
-2. Write the **live declaration group** (we measured it flips the PCIe declaration in real time):
-   `0x8872C = 6` → `0x2241C |= 0x81` → `0x8841C &= ~0x6000` → `0x8C2C0 &= ~4`
-   → `0x8C300 &= ~0x10` → `0x8C040 SPEED=1` → `0x8C1C0[19:16]=2` → `0x88610 |= 1`
-   (the Gen2 declaration bit appears in `LnkCap2` within 1 second; no reset);
-3. Set `LNKCTL2 = 2` (5.0 GT/s) on both ends and retrain at the root port → **Gen2 x4**;
+**Wait times:** autostart fires at boot **+90 s**, unlocks **3–10 s** later (wait 2–3 min after boot before
+checking); if status says "recovering", wait 20 s; `带宽测试.cmd` briefly drops the link 10–20 s and waits
+up to 30 s for recovery; task retries at boot +90 s / logon +120 s / every 5 min.
+
+## Why drops still happen
+
+The NVIDIA driver rewrites these volatile registers when it initializes/wakes the GPU or creates a CUDA
+context → the link briefly falls back to Gen1 and the width declaration is wiped. The v1.2 20 ms watchdog
+restores **Gen2 in 0.23 s** and the **x16 declaration in 0.8 s**. With no program touching the GPU the link is
+stable (measured: 6 min 40 s with zero drops).
+
+- GPU-Z / MSI Afterburner polling, browser hardware acceleration, game launchers and chat apps can each
+  trigger one drop (self-heals in 2–5 s);
+- During gaming the link stays Gen2 under load; close GPU-Z/Afterburner for a cleaner graph;
+- On capped (physically x16) cards, each recovery re-runs the width retrain to restore physical x16.
+
+## How it works (v1.2)
+
+1. Map GPU BAR0 through BYOVD drivers (WinRing0 / ThrottleStop);
+2. Apply the **live declaration write group**:
+   `0x8872C=6` → `0x2241C|=0x81` → `0x8841C&=~0x6000` → `0x8C2C0&=~4`
+   → `0x8C300&=~0x10` → `0x8C040 SPEED=1` → `0x8C1C0[19:16]=2` → `0x88610|=1`;
+3. Set `LNKCTL2=2` on both ends + retrain the root port → link trains to **Gen2 x4**;
 4. Write the **x16 width declaration**: `0x8C040 = (cur & ~0xF8000000) | 0x80000000`
-   (safe recipe; rollback always writes the whole word `0x20085800`; single-bit clearing of bit31 was
-   measured to drop the card);
-5. 150 ms watchdog re-applies only when the four criteria deviate (NVIDIA driver resets `0x8C040.SPEED`
-   on every CUDA init);
-6. Only if the live path fails repeatedly: one card reset as fallback, then re-apply the live group.
+   (safe recipe; rollback always writes the whole word `0x20085800` — never clear bit31 with a mask);
+5. **Width retrain**: after a successful arm, retrain once and read `LNKSTA` width; only `width=16` counts as
+   success; 2 consecutive misses → assume no capacitors, stop retraining for this process;
+6. **20 ms watchdog**: only writes on deviation; after a drop it retrains every 20 ms, restores Gen2 and re-arms;
+7. If live writes keep failing (rare), one full-card reset is allowed (max 1/run, 2/boot, ≥10 min apart).
 
 ## Open source: tool + methodology + toolchain
 
 | Path | Content |
 |---|---|
-| `P104-2.0x16-v1.1/` | Windows one-click tool (pure ASCII cmd) |
-| [`tools/`](tools/README.md) | Python experiment toolchain: read-only probe, live write group, width declaration, hardware lock |
-| [`docs/07-破解方法论与AI-Agent指南.md`](docs/07-破解方法论与AI-Agent指南.md) | Full methodology (four-layer model, standard workflow, safety rules, porting to other mining cards) |
-| [`docs/06-v1.1-更新说明.md`](docs/06-v1.1-更新说明.md) | v1.0 → v1.1 technical notes and measurements |
-| [`docs/05-功能边界总表.md`](docs/05-功能边界总表.md) | Capability boundary: what can and cannot be unlocked |
+| `P104-2.0x16-v1.2/` | Windows one-click package (pure ASCII cmd) |
+| [`src/P104Gen2x4.cs`](src/P104Gen2x4.cs) | C# source (single file, with notes and field lessons) |
+| [`tools/`](tools/README.md) | Python experiment toolchain: read-only probe, live write group, width recipe, HW lock |
+| [`docs/07-破解方法论与AI-Agent指南.md`](docs/07-破解方法论与AI-Agent指南.md) | Full methodology (Chinese): four layers, standard workflow, safety rules, adapting to other cards |
+| [`docs/08-v1.2-更新说明.md`](docs/08-v1.2-更新说明.md) | v1.1 → v1.2 changes and measurements |
+| [`docs/05-功能边界总表.md`](docs/05-功能边界总表.md) | What can and cannot be unlocked |
 
-> **Hand it to an AI agent.** If you own a different mining card (P106 / CMP series, etc.), you can give
-> this repo's README, methodology and `tools/` to an AI agent (Claude Code / Codex / DSH, etc.) and let it
-> follow the same workflow — **read-only probe → write-channel control → single-variable search for the
-> declaration switch → speed/width → resident hold → bandwidth verification** — to analyze and adapt the
-> approach to hardware you own. The tool is open source, and so is the methodology.
-
-## Compatibility & safety
-
-- Windows 10 / 11 x64 + **administrator**; P104-100 only (`10DE:1B87`);
-- Validated on a CPU-attached x16 slot (PCH slots not tested; community reports they may latch with BAR0 writes only);
-- BYOVD drivers may trigger AV/anti-cheat alerts — expected;
-- **Volatile register writes only**: no VBIOS flashing, no fuse burning; power cycle restores everything;
-- Use on hardware you own only;
-- If link training fails badly the card can disappear from the bus: **full AC power-off for 30 s** recovers it;
-  the tool stops and tells you instead of retrying in a loop.
-
-## Credits
-
-- **WJNKAC**'s Linux analysis (`LnkCap2` bit semantics, `LnkCtl2` clamping, CUDA-init down-speed, etc.);
-- All boundary-experiment records in `docs/05-功能边界总表.md`.
-
-## Disclaimer
-
-Research and personal-hardware use only. Only volatile registers are written; no VBIOS/fuse-level persistent
-modifications. Use at your own risk.
+> **Hand it to an AI agent.** If you own a different mining card (P106 / CMP series, etc.), give this repo's
+> README, methodology and `tools/` to an AI agent (Claude Code / Codex / DSH, etc.) and let it follow the same
+> workflow — **read-only probe → write-channel control → single-variable search for the declaration switch →
+> speed/width → resident hold → bandwidth verification** — to analyze and adapt the approach to your own
+> hardware. The tool is open source, and so is the methodology.
 
 ## Versions
 
-This README describes the current version; see **Releases** and `RELEASE_NOTES_v*.md` for history.
+| Version | Content | Note |
+|---|---|---|
+| **v3.3 (tool v1.2)** | 20 ms watchdog + width retrain + Chinese status + `-bw` order fix | **current, recommended** |
+| v3.2 (tool v1.1) | 150 ms watchdog, live write group, status panel | usable fallback |
+| v3.1 (v1.0 packages) | reset-and-rebind path | **deprecated, do not use** (kept as history) |
+| v1.6 (old repo) | first Gen2 x4 one-click tool | Gen2-only users: [old repo `p104-gen2-unlock`](https://github.com/skbskhud/p104-gen2-unlock) |
+
+> The old repo publishes the same v3.3 release (dual-repo distribution); both repos use the same version number.
+
+## Compatibility & safety
+
+- Windows 10 / 11 x64 + **administrator**; P104-100 (`10DE:1B87`) only;
+- Verified on CPU-attached PCIe x16 slot (PCH slot untested);
+- BYOVD drivers (WinRing0 / ThrottleStop) may be flagged by AV/anti-cheat — expected;
+- **Volatile registers only**: no VBIOS/EEPROM/fuse writes; power cycle reverts everything;
+- If link training fails and the card drops off the bus: **full AC power-off for 30 s** restores it;
+- Physical x16 needs **AC coupling capacitor modification** — not guaranteed by software; the tool logs whether
+  physical x16 was achieved.
+
+## Credits
+
+- **WJNKAC** for the Linux-side analysis (`LnkCap2` bit semantics, `LnkCtl2` clamping, CUDA-init down-speed);
+- Users of the old v1.6 (Gen2 x4) release for feedback;
+- Authors of the open drivers/toolchain (WinRing0, ThrottleStop);
+- Everyone in the community who explored P104/P106 PCIe unlocking first.
+
+## Disclaimer
+
+For learning, research and your own hardware only. Modifying PCIe links can cause device loss/system
+instability; use at your own risk. No VBIOS or fuse-level persistent changes are made.
