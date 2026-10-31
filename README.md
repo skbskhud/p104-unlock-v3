@@ -120,6 +120,7 @@ stable (measured: 6 min 40 s with zero drops).
   trigger one drop (self-heals in 2–5 s);
 - During gaming the link stays Gen2 under load; close GPU-Z/Afterburner for a cleaner graph;
 - Physical x16 needs hardware support (PHY/board); not achievable on this card. The tool retrains width after each recovery and reports the real result.
+**About the GPU-Z "flapping" display:** GPU-Z / Afterburner refresh is **not synchronized** with our recovery — the tool re-applies within 0.2–0.5 s, but the monitor may sample exactly during the brief dip, so it looks like flapping. For the real picture, check the `LNKSTA` values from `状态.cmd` or the recovery lines in `status.txt`.
 
 ## How it works (v1.2)
 
