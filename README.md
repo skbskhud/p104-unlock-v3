@@ -79,6 +79,8 @@ On this P104-100 (VBIOS `86.04.7a.00.19`, subsys `1237:10DE`) with soldered AC c
 Raw data: [`docs/09-物理层实测记录-2026-10-31.md`](docs/09-物理层实测记录-2026-10-31.md) and [`docs/evidence/`](docs/evidence/).
 
 **Where we are stuck (help welcome)**: (1) the boot-time strap declares maxwidth=4, so the first link training is always x4; (2) after we change the declaration at runtime, the link never re-runs Detect (Retrain only goes to Recovery, and a Link-Disable cycle drops the card). If you know where the strap lives / how to change it, or how to force a re-detect without losing the card, please open an Issue/Discussion. Details: [`docs/09`](docs/09-物理层实测记录-2026-10-31.md) section 7.
+**Note**: this package already implements "declaration arm + width retrain". If a given P104-100 board natively supports 16 lanes (strap/routing/caps), this tool **may** unlock physical x16 directly via retrain; however this has **not yet been verified on our board** (still x4 after cap mod) — more samples are needed.
+
 ## Download & usage
 Download `P104-2.0x16-v1.2.zip` from **Releases** (or the same-named folder in this repo), extract fully, then:
 
