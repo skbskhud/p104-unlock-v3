@@ -94,3 +94,4 @@ bin\P104Gen2x4.exe     67,584 B   SHA256 04F9481C989996E780775C09AE63A1F473BBC1F
 ⇒ **软件/固件侧没有宽度入口；x4 来自 PHY/strap/板级**。部分批次可能不同（社区有成功案例），
 判断应以 `LNKSTA` 宽度=16 或带宽 ≈6 GB/s 为准（GPU-Z 显示不可靠）。
 完整记录见 `docs/09-物理层实测记录-2026-10-31.md` 与 `docs/evidence/`。
+> 如果你知道 P104-100 的上电 strap/宽度配置存在哪、怎么改，或能让链路重新走 Detect 且不掉卡，欢迎开 Issue/Discussion 指教。

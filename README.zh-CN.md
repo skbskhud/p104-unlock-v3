@@ -75,6 +75,7 @@ LINK_CONFIG_0  0x20585800       0x20545800      ← 0x8C040（SPEED=1）
 需对比 PCB 走线与真实 `LNKSTA` 宽度/带宽证据。完整实验记录与原始数据见
 [`docs/09-物理层实测记录-2026-10-31.md`](docs/09-物理层实测记录-2026-10-31.md) 与 [`docs/evidence/`](docs/evidence/)。
 
+**卡点（欢迎指教）**：我们卡在两个地方——① 上电 strap 声明为 4（第一次训练必然 x4）；② 运行时改声明后链路不重新走 Detect（Retrain 只进 Recovery，Link Disable 会掉卡）。如果你知道 strap 存在哪/怎么改，或能让链路重新检测 lane 且不掉卡，欢迎开 Issue/Discussion。详见 [`docs/09`](docs/09-物理层实测记录-2026-10-31.md) 第 7 节。
 ## 下载与使用
 在 **Releases** 下载 `P104-2.0x16-v1.2.zip`（或本仓库同名目录），**完整解压**后：
 
