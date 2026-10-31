@@ -26,9 +26,12 @@ Changes in v1.2 vs v1.1:
 | `带宽测试.cmd` | printed "recovered" then dropped again on exit | **destroys CUDA context first, then waits, then prints** |
 | Script name | `一键解锁.cmd` | **`自动解锁.cmd`** |
 
-> ⚠️ **x16 is still declaration-layer**: `LnkCap maxwidth=16` is really written; with only 4 physical lanes the
-> link stays x4 and bandwidth does not increase. v1.2 adds "retrain after arm", so **after AC coupling
-> capacitors are installed** it will attempt real physical x16; results will be posted in both repos.
+> ⚠️ **Physical x16 test result (2026-10-31): not yet achieved on this P104-100 as of 2026-10-31.**
+> After soldering AC coupling capacitors, we verified: runtime writes, driver-disabled writes, full device
+> resets, and an exhaustive 117-bit register sweep — the trained link width stays x4.
+> Width registers such as `0x88140` (LINK_WIDTH+COMMIT) are protected by a hardware privilege gate (`0xBADF5040`).
+> This tool delivers **Gen2 x4 + x16 width declaration**; physical x16 depends on board batch/routing.
+> Details: [`docs/09-物理层实测记录-2026-10-31.md`](docs/09-物理层实测记录-2026-10-31.md).
 
 ## Measured results (2026-10-30/31, single card, CPU-attached x16 slot)
 
@@ -57,8 +60,25 @@ LINK_CONFIG_0  0x20585800       0x20545800      <- 0x8C040 (SPEED=1)
 > Note: GPU-Z / nvidia-smi "supported speed/width" are **driver-reported values** and are unreliable on this
 > card (often shows 1.1 x4). Trust the raw `LNKSTA` / `LNKCAP` values from `状态.cmd`.
 
-## Download & usage
+## Physical layer test (2026-10-31)
 
+On this P104-100 (VBIOS `86.04.7a.00.19`, subsys `1237:10DE`) with soldered AC coupling capacitors
+(0402 100nF X7R), the link still trains to x4 only. Verified paths:
+
+| Path | Result |
+|---|---|
+| Runtime `0x8C040` arm + retrain | declaration 16 OK, physical x4 |
+| Driver disabled + writes + retrain | x4 |
+| Full resets (restart / disable-enable / remove-scan) | x4 (resets did take effect) |
+| Exhaustive XVE bit sweep (117 bits, 12.24M samples) | **no bit changed width**; `0x8C080` always `0x0404` |
+| Driver disabled + `0x88140` (LINK_WIDTH16\|COMMIT)/`0x88084`/`0x8C080`/`0x88460` | privilege gate `0xBADF5040`, writes dropped |
+| VBIOS read-only analysis | DevInit never writes width fields; boot x4 is not set by VBIOS |
+
+**Conclusion**: no software/firmware entry for width on this card; x4 comes from PHY/strap/board.
+**Some batches may differ** (online success reports exist) — compare PCB routing and real `LNKSTA` width/bandwidth.
+Raw data: [`docs/09-物理层实测记录-2026-10-31.md`](docs/09-物理层实测记录-2026-10-31.md) and [`docs/evidence/`](docs/evidence/).
+
+## Download & usage
 Download `P104-2.0x16-v1.2.zip` from **Releases** (or the same-named folder in this repo), extract fully, then:
 
 1. Right-click **`自动解锁.cmd`** → **Run as administrator**;
@@ -96,7 +116,7 @@ stable (measured: 6 min 40 s with zero drops).
 - GPU-Z / MSI Afterburner polling, browser hardware acceleration, game launchers and chat apps can each
   trigger one drop (self-heals in 2–5 s);
 - During gaming the link stays Gen2 under load; close GPU-Z/Afterburner for a cleaner graph;
-- On capped (physically x16) cards, each recovery re-runs the width retrain to restore physical x16.
+- Physical x16 needs hardware support (PHY/board); not achievable on this card. The tool retrains width after each recovery and reports the real result.
 
 ## How it works (v1.2)
 
@@ -133,7 +153,7 @@ stable (measured: 6 min 40 s with zero drops).
 
 | Version | Content | Note |
 |---|---|---|
-| **v3.3 (tool v1.2)** | 20 ms watchdog + width retrain + Chinese status + `-bw` order fix | **current, recommended** |
+| **v3.3 (tool v1.2)** | 20 ms watchdog + width retrain + Chinese status + `-bw` order fix; includes physical x16 test result (not achievable on this card) | **current, recommended** |
 | v3.2 (tool v1.1) | 150 ms watchdog, live write group, status panel | usable fallback |
 | v3.1 (v1.0 packages) | reset-and-rebind path | **deprecated, do not use** (kept as history) |
 | v1.6 (old repo) | first Gen2 x4 one-click tool | Gen2-only users: [old repo `p104-gen2-unlock`](https://github.com/skbskhud/p104-gen2-unlock) |
